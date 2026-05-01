@@ -1,9 +1,40 @@
+# Modifications copyright 2026 Hayato Shimada.
+# Licensed under the Apache License, Version 2.0; see ../../LICENSE.
+# Original file: model/backbone/match_SEA_large.py (upstream commit 1b2da5c).
+#
+# Changes from upstream:
+#   * Attention.forward / Block.forward / AttentionBlock.forward /
+#     Matchformer_SEA_large.forward all take an optional `mask` (image-
+#     resolution [B, H, W] bool). The mask is adaptively max-pooled to each
+#     stage's spatial size and used to fill the K-dim of the attention
+#     similarity matrix with -inf before softmax (separately for the self- and
+#     cross-attention branches), so background tokens cannot drive matched
+#     features. Rows whose entire K-dim is masked produce NaNs after softmax;
+#     these are replaced with zero so they contribute nothing to the residual.
+#   * Backwards compatible: when mask is None, the forward graph is identical
+#     to upstream and pretrained weights load unchanged.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from functools import partial
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 import math
+
+
+def _downsample_mask(mask: torch.Tensor, h: int, w: int) -> torch.Tensor:
+    """[B, H, W] bool -> [B, h, w] bool via adaptive max-pool (any valid sub-cell wins)."""
+    m = mask.float().unsqueeze(1)
+    m = F.adaptive_max_pool2d(m, output_size=(h, w))
+    return m.squeeze(1) > 0.5
+
+
+def _safe_softmax(attn: torch.Tensor, mask_k: torch.Tensor | None) -> torch.Tensor:
+    """Softmax with optional K-dim mask. Rows fully masked -> all-zero."""
+    if mask_k is None:
+        return attn.softmax(dim=-1)
+    attn = attn.masked_fill(~mask_k[:, None, None, :], float("-inf"))
+    out = attn.softmax(dim=-1)
+    return torch.nan_to_num(out, nan=0.0)
 
 
 def conv1x1(in_planes, out_planes, stride=1):
@@ -70,8 +101,22 @@ class Attention(nn.Module):
             self.sr = nn.Conv2d(dim, dim, kernel_size=sr_ratio, stride=sr_ratio)
             self.norm = nn.LayerNorm(dim)
 
-    def forward(self, x, H, W):
+    def _kv_mask(self, mask: torch.Tensor | None, H: int, W: int) -> torch.Tensor | None:
+        """Downsample the K/V token mask when sr_ratio>1 to match SR output."""
+        if mask is None:
+            return None
+        if self.sr_ratio == 1:
+            return mask  # [B, N]
+        B = mask.shape[0]
+        m2d = mask.reshape(B, H, W)
+        h2 = max(1, H // self.sr_ratio)
+        w2 = max(1, W // self.sr_ratio)
+        m2d = _downsample_mask(m2d, h2, w2)
+        return m2d.reshape(B, -1)
+
+    def forward(self, x, H, W, mask=None):
         B, N, C = x.shape
+        kv_mask = self._kv_mask(mask, H, W)  # [B, N_kv] or None
         if self.cross == True:
             MiniB = B // 2
             #cross attention
@@ -85,16 +130,20 @@ class Attention(nn.Module):
                 kv = self.kv(x_).reshape(B, -1, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
             else:
                 kv = self.kv(x).reshape(B, -1, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-            
+
             k1, k2 = kv[0].split(MiniB)
             v1, v2 = kv[1].split(MiniB)
 
+            mask_k1 = mask_k2 = None
+            if kv_mask is not None:
+                mask_k1, mask_k2 = kv_mask.split(MiniB)
+
             attn1 = (q1 @ k2.transpose(-2, -1)) * self.scale
-            attn1 = attn1.softmax(dim=-1)
+            attn1 = _safe_softmax(attn1, mask_k2)
             attn1 = self.attn_drop(attn1)
 
             attn2 = (q2 @ k1.transpose(-2, -1)) * self.scale
-            attn2 = attn2.softmax(dim=-1)
+            attn2 = _safe_softmax(attn2, mask_k1)
             attn2 = self.attn_drop(attn2)
 
             x1 = (attn1 @ v2).transpose(1, 2).reshape(MiniB, N, C)
@@ -104,7 +153,7 @@ class Attention(nn.Module):
         else:
             q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
 
-            
+
             if self.sr_ratio > 1:
                 x_ = x.permute(0, 2, 1).reshape(B, C, H, W)
                 x_ = self.sr(x_).reshape(B, C, -1).permute(0, 2, 1)
@@ -115,11 +164,11 @@ class Attention(nn.Module):
             k, v = kv[0], kv[1]
 
             attn = (q @ k.transpose(-2, -1)) * self.scale
-            attn = attn.softmax(dim=-1)
+            attn = _safe_softmax(attn, kv_mask)
             attn = self.attn_drop(attn)
 
             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        
+
         x = self.proj(x)
         x = self.proj_drop(x)
 
@@ -139,8 +188,8 @@ class Block(nn.Module):
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
-    def forward(self, x, H, W):
-        x = x + self.drop_path(self.attn(self.norm1(x), H, W))
+    def forward(self, x, H, W, mask=None):
+        x = x + self.drop_path(self.attn(self.norm1(x), H, W, mask=mask))
         x = x + self.drop_path(self.mlp(self.norm2(x), H, W))
 
         return x
@@ -194,11 +243,15 @@ class AttentionBlock(nn.Module):
             for i in range(depths)])
         self.norm = norm_layer(embed_dims)
 
-    def forward(self, x):
+    def forward(self, x, mask=None):
         B = x.shape[0]
         x, H, W  = self.patch_embed(x)
+        m_flat = None
+        if mask is not None:
+            m = _downsample_mask(mask, H, W)
+            m_flat = m.reshape(B, H * W)
         for i, blk in enumerate(self.block):
-            x = blk(x,H,W)
+            x = blk(x, H, W, mask=m_flat)
         x = self.norm(x)
         x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
 
@@ -259,19 +312,19 @@ class Matchformer_SEA_large(nn.Module):
             if m.bias is not None:
                 m.bias.data.zero_()
 
-    def forward(self, x):
-        # stage 1 # 1/4        
-        x = self.AttentionBlock1(x)
+    def forward(self, x, mask=None):
+        # stage 1 # 1/4
+        x = self.AttentionBlock1(x, mask=mask)
         out1 = x
         # stage 2 # 1/8
-        x = self.AttentionBlock2(x)     
-        out2 = x                    
+        x = self.AttentionBlock2(x, mask=mask)
+        out2 = x
         # stage 3 # 1/16
-        x = self.AttentionBlock3(x)                          
+        x = self.AttentionBlock3(x, mask=mask)
         out3 = x
         # stage 3 # 1/32
-        x = self.AttentionBlock4(x)                          
-        out4 = x 
+        x = self.AttentionBlock4(x, mask=mask)
+        out4 = x
         
         #FPN
         c4_out = self.layer4_outconv(out4)

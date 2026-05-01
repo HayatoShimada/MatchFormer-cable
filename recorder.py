@@ -143,7 +143,15 @@ def _union_mask(detections: list[dict[str, Any]], hw: tuple[int, int],
 def main() -> int:
     args = parse_args()
     out_dir = _make_session_dir(args)
-    print(f"[recorder] output: {out_dir}", file=sys.stderr)
+    target_n = (int(args.duration * args.record_fps) if not args.max_frames
+                else min(args.max_frames, int(args.duration * args.record_fps)))
+    print(
+        f"[recorder] output: {out_dir}\n"
+        f"[recorder] schedule: start_delay={args.start_delay:.1f}s, "
+        f"duration={args.duration:.1f}s, record_fps={args.record_fps:.1f} "
+        f"(~{target_n} frames)",
+        file=sys.stderr,
+    )
 
     # ---- camera ----
     devices = enumerate_devices()

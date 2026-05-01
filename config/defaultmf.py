@@ -1,3 +1,12 @@
+# Modifications copyright 2026 Hayato Shimada.
+# Licensed under the Apache License, Version 2.0; see ../LICENSE.
+# Original file: config/defaultmf.py (upstream commit 1b2da5c).
+#
+# Changes from upstream:
+#   * Added _CN.LOSS section consumed by model.losses.MatchformerLoss.
+#   * Added _CN.TRAINER.OPTIMIZER and _CN.TRAINER.SCHEDULER for
+#     PL_LoFTR.configure_optimizers (AdamW + warmup-cosine).
+#   * Added _CN.DATASET.CABLE_* keys for model.datasets.cable_sequence.
 from yacs.config import CfgNode as CN
 _CN = CN()
 
@@ -80,6 +89,42 @@ _CN.TRAINER.SB_SUBSET_SAMPLE_REPLACEMENT = True  # whether sample each scene wit
 _CN.TRAINER.SB_SUBSET_SHUFFLE = True  # after sampling from scenes, whether shuffle within the epoch or not
 _CN.TRAINER.SB_REPEAT = 1  # repeat N times for training the sampled data
 _CN.TRAINER.SEED = 66
+
+
+##############  Loss (cable fork)  ##############
+_CN.LOSS = CN()
+_CN.LOSS.COARSE_W = 1.0
+_CN.LOSS.FINE_W = 1.0
+_CN.LOSS.POS_W = 1.0
+_CN.LOSS.NEG_W = 1.0
+_CN.LOSS.FOCAL_ALPHA = 0.25
+_CN.LOSS.FOCAL_GAMMA = 2.0
+_CN.LOSS.FINE_CORRECT_THR = 1.0
+
+
+##############  Optimizer / Scheduler (cable fork)  ##############
+_CN.TRAINER.OPTIMIZER = CN()
+_CN.TRAINER.OPTIMIZER.NAME = 'adamw'
+_CN.TRAINER.OPTIMIZER.LR = 1e-5  # FT default; pretraining used 1e-3
+_CN.TRAINER.OPTIMIZER.WEIGHT_DECAY = 0.0
+
+_CN.TRAINER.SCHEDULER = CN()
+_CN.TRAINER.SCHEDULER.WARMUP_STEPS = 200
+_CN.TRAINER.SCHEDULER.TOTAL_STEPS = 10000
+_CN.TRAINER.SCHEDULER.MIN_LR_RATIO = 0.01
+
+
+##############  Cable-sequence dataset (cable fork)  ##############
+_CN.DATASET.CABLE_ROOT = None
+_CN.DATASET.CABLE_SESSIONS_TRAIN = []
+_CN.DATASET.CABLE_SESSIONS_VAL = []
+_CN.DATASET.CABLE_PAIR_STRIDE_MIN = 1
+_CN.DATASET.CABLE_PAIR_STRIDE_MAX = 5
+_CN.DATASET.CABLE_PAIRS_PER_SESSION = 200
+_CN.DATASET.CABLE_IMG_RESIZE = 480
+_CN.DATASET.CABLE_USE_MASK = True
+_CN.DATASET.CABLE_REQUIRE_POSE = False
+
 
 def get_cfg_defaults():
     """Get a yacs CfgNode object with default values for my_project."""

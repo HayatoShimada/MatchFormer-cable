@@ -56,9 +56,14 @@ MatchFormer-cable/
 │   ├── data/                                (upstream, unchanged)
 │   └── train_cable.py                       (NEW: training defaults for cable FT)
 ├── model/
-│   ├── matchformer.py                       (modified: asymmetric masks, mask passthrough)
-│   ├── backbone/                            (modified: mask-aware attention)
-│   ├── lightning_loftr.py                   (modified: + training_step + configure_optimizers)
+│   ├── matchformer.py                       (MOD: asymmetric masks, mask passthrough)
+│   ├── backbone/
+│   │   ├── match_SEA_large.py               (MOD: mask-aware attention)
+│   │   └── match_{SEA_lite,LA_large,LA_lite}.py  (upstream; mask kwarg ignored
+│   │                                              -- enable with the same
+│   │                                              pattern as match_SEA_large
+│   │                                              when needed)
+│   ├── lightning_loftr.py                   (MOD: + training_step + configure_optimizers)
 │   ├── datasets/
 │   │   ├── megadepth.py / scannet.py        (upstream, unchanged)
 │   │   └── cable_sequence.py                (NEW: recorder-output Dataset)
@@ -70,6 +75,9 @@ MatchFormer-cable/
 ├── train.py                                 (NEW: training entrypoint)
 └── test.py                                  (upstream, unchanged)
 ```
+
+`MOD` = modified relative to upstream (carries an Apache-2.0 §4(b) header).
+`NEW` = new file added by the fork (carries a standalone Apache-2.0 header).
 
 `weight/` is intentionally not committed; the `indoor-large-SEA.ckpt`
 symlink under `/opt/matchformer-weights/` already points at the upstream
