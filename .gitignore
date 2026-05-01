@@ -1,12 +1,28 @@
-model/weight/indoor-large-SEA.ckpt
-config/__pycache__/defaultmf.cpython-310.pyc
-model/__pycache__/matchformer.cpython-310.pyc
-model/backbone/__pycache__/__init__.cpython-310.pyc
-model/backbone/__pycache__/coarse_matching.cpython-310.pyc
-model/backbone/__pycache__/fine_matching.cpython-310.pyc
-model/backbone/__pycache__/fine_preprocess.cpython-310.pyc
-model/backbone/__pycache__/match_LA_large.cpython-310.pyc
-model/backbone/__pycache__/match_LA_lite.cpython-310.pyc
-model/backbone/__pycache__/match_SEA_large.cpython-310.pyc
-model/backbone/__pycache__/match_SEA_lite.cpython-310.pyc
-model/utils/__pycache__/misc.cpython-310.pyc
+# Compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Model weights -- host them outside the repo (see FORK.md).
+model/weight/
+weights/
+*.ckpt
+*.pth
+*.pt
+
+# Training artefacts
+logs/
+runs/
+checkpoints/
+wandb/
+lightning_logs/
+*.log
+
+# Datasets -- keep raw data out of the source tree.
+data/
+datasets/
