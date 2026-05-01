@@ -1,6 +1,16 @@
+# Modifications copyright 2026 Hayato Shimada.
+# Licensed under the Apache License, Version 2.0; see ../../LICENSE.
+# Original file: model/utils/profiler.py (upstream commit 1b2da5c).
+# Compatible-import shim for pytorch_lightning >= 2.0 (where the
+# `pytorch_lightning.profiler` module was renamed to `.profilers`).
 import torch
-from pytorch_lightning.profiler import SimpleProfiler, PassThroughProfiler
 from contextlib import contextmanager
+
+try:
+    from pytorch_lightning.profilers import SimpleProfiler, PassThroughProfiler
+except ImportError:  # PL < 2.0 fallback
+    from pytorch_lightning.profiler import SimpleProfiler, PassThroughProfiler  # type: ignore
+
 from pytorch_lightning.utilities import rank_zero_only
 
 
@@ -31,7 +41,10 @@ def build_profiler(name):
     if name == 'inference':
         return InferenceProfiler()
     elif name == 'pytorch':
-        from pytorch_lightning.profiler import PyTorchProfiler
+        try:
+            from pytorch_lightning.profilers import PyTorchProfiler
+        except ImportError:
+            from pytorch_lightning.profiler import PyTorchProfiler  # type: ignore
         return PyTorchProfiler(use_cuda=True, profile_memory=True, row_limit=100)
     elif name is None:
         return PassThroughProfiler()

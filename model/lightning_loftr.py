@@ -22,6 +22,9 @@ import pytorch_lightning as pl
 from .matchformer import Matchformer
 from .losses import MatchformerLoss
 from .supervision import compute_supervision_coarse, compute_supervision_fine
+from .supervision_homography import (
+    compute_supervision_coarse_h, compute_supervision_fine_h,
+)
 from .utils.metrics import (
     compute_symmetrical_epipolar_errors,
     compute_pose_errors,
@@ -67,24 +70,29 @@ class PL_LoFTR(pl.LightningModule):
     #  Training
     # ------------------------------------------------------------------ #
     def _supervised_forward(self, batch: dict) -> torch.Tensor:
-        """Run forward + supervision + loss. Mutates `batch`."""
-        # 1. coarse GT must be computed *before* forward so CoarseMatching's
-        #    training-time padding can read spv_b_ids/i_ids/j_ids.
+        """Run forward + supervision + loss. Mutates `batch`.
+
+        Picks the supervision flavour from ``batch['data_mode']`` (a list of
+        strings produced by the Dataset). Falls back to depth+pose mode for
+        legacy callers that didn't set the key.
+        """
         scale_c = int(self.config.MATCHFORMER.RESOLUTION[0])
-        compute_supervision_coarse(batch, scale_c=scale_c)
-
-        # 2. forward
-        self.matcher(batch)
-
-        # 3. fine GT (uses b_ids/i_ids/j_ids written by CoarseMatching)
         scale_f = int(self.config.MATCHFORMER.RESOLUTION[1])
-        compute_supervision_fine(
-            batch,
-            fine_window_size=int(self.config.MATCHFORMER.FINE_WINDOW_SIZE),
-            scale_f=scale_f,
-        )
+        fine_w = int(self.config.MATCHFORMER.FINE_WINDOW_SIZE)
 
-        # 4. loss
+        mode = batch.get("data_mode", "pose")
+        if isinstance(mode, list):
+            mode = mode[0] if mode else "pose"
+
+        if mode == "homography":
+            compute_supervision_coarse_h(batch, scale_c=scale_c)
+            self.matcher(batch)
+            compute_supervision_fine_h(batch, fine_window_size=fine_w, scale_f=scale_f)
+        else:
+            compute_supervision_coarse(batch, scale_c=scale_c)
+            self.matcher(batch)
+            compute_supervision_fine(batch, fine_window_size=fine_w, scale_f=scale_f)
+
         loss, scalars = self.loss_fn(batch)
         return loss, scalars
 

@@ -1,9 +1,19 @@
+# Modifications copyright 2026 Hayato Shimada.
+# Licensed under the Apache License, Version 2.0; see ../../LICENSE.
+# Original file: model/backbone/match_LA_lite.py (upstream commit 1b2da5c).
+# Same mask-aware linear-attention surgery as match_LA_large.py.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from functools import partial
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 import math
+
+
+def _downsample_mask(mask: torch.Tensor, h: int, w: int) -> torch.Tensor:
+    m = mask.float().unsqueeze(1)
+    m = F.adaptive_max_pool2d(m, output_size=(h, w))
+    return m.squeeze(1) > 0.5
 
 
 def conv1x1(in_planes, out_planes, stride=1):
@@ -61,7 +71,7 @@ class Attention(nn.Module):
         self.q = nn.Linear(dim, dim, bias=qkv_bias)
         self.kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
 
-    def forward(self, x): 
+    def forward(self, x, mask=None):
         x_q, x_kv = x, x
         B, N, C = x_q.shape
         MiniB = B // 2
@@ -73,18 +83,28 @@ class Attention(nn.Module):
             v1, v2 = kv[1].split(MiniB)
             key = torch.cat([k2, k1], dim=0)
             value = torch.cat([v2, v1], dim=0)
+            if mask is not None:
+                m1, m2 = mask.split(MiniB)
+                k_mask = torch.cat([m2, m1], dim=0)
+            else:
+                k_mask = None
         else:
-            key, value = kv[0], kv[1]  
-            
+            key, value = kv[0], kv[1]
+            k_mask = mask
+
         Q = self.feature_map(query)
         K = self.feature_map(key)
+        if k_mask is not None:
+            m = k_mask[..., None, None].float()
+            K = K * m
+            value = value * m
         v_length = value.size(1)
         value = value / v_length
         KV = torch.einsum("nshd,nshv->nhdv", K, value)
         Z = 1 / (torch.einsum("nlhd,nhd->nlh", Q, K.sum(dim=1)) + self.eps)
         x = torch.einsum("nlhd,nhdv,nlh->nlhv", Q, KV, Z) * v_length
         x = x.contiguous().view(B, -1, C)
-        
+
         return x
 
 class Block(nn.Module):
@@ -101,10 +121,10 @@ class Block(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
 
-    def forward(self, x,H,W):
-        x = x + self.drop_path(self.attn(self.norm1(x)))
-        x = x + self.drop_path(self.mlp(self.norm(x),H,W))
-        
+    def forward(self, x, H, W, mask=None):
+        x = x + self.drop_path(self.attn(self.norm1(x), mask=mask))
+        x = x + self.drop_path(self.mlp(self.norm(x), H, W))
+
         return x
 
 class Positional(nn.Module):
@@ -156,11 +176,14 @@ class AttentionBlock(nn.Module):
             for i in range(depths)])
         self.norm = norm_layer(embed_dims)
 
-    def forward(self, x):
+    def forward(self, x, mask=None):
         B = x.shape[0]
         x, H, W  = self.patch_embed(x)
-        for i, blk in enumerate(self.block):
-            x = blk(x,H,W)
+        m_flat = None
+        if mask is not None:
+            m_flat = _downsample_mask(mask, H, W).reshape(B, H * W)
+        for blk in self.block:
+            x = blk(x, H, W, mask=m_flat)
         x = self.norm(x)
         x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
 
@@ -222,19 +245,19 @@ class Matchformer_LA_lite(nn.Module):
             if m.bias is not None:
                 m.bias.data.zero_()
 
-    def forward(self, x):
-        # stage 1 # 1/4        
-        x = self.AttentionBlock1(x)
+    def forward(self, x, mask=None):
+        # stage 1 # 1/4
+        x = self.AttentionBlock1(x, mask=mask)
         out1 = x
         # stage 2 # 1/8
-        x = self.AttentionBlock2(x)     
-        out2 = x                    
+        x = self.AttentionBlock2(x, mask=mask)
+        out2 = x
         # stage 3 # 1/16
-        x = self.AttentionBlock3(x)                          
+        x = self.AttentionBlock3(x, mask=mask)
         out3 = x
         # stage 3 # 1/32
-        x = self.AttentionBlock4(x)                          
-        out4 = x 
+        x = self.AttentionBlock4(x, mask=mask)
+        out4 = x
         
         #FPN
         c4_out = self.layer4_outconv(out4)

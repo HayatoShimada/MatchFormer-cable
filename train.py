@@ -31,9 +31,9 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from config.defaultmf import get_cfg_defaults  # noqa: E402
 from model.lightning_loftr import PL_LoFTR  # noqa: E402
 from model.datasets.cable_sequence import CableSequenceDataset  # noqa: E402
+from model.datasets.homography_dataset import HomographyDataset  # noqa: E402
 
 
 def _load_data_cfg(path: Path):
@@ -66,11 +66,18 @@ def parse_args():
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--data-cfg", type=Path, required=True)
     p.add_argument("--pretrained", type=str, default=None)
+    p.add_argument("--data-mode", choices=("homography", "pose"), default="homography",
+                   help="homography = self-supervised pairs from a single masked frame "
+                        "(default; matches the fixed-camera + cable-on-floor deployment "
+                        "scenario). pose = depth + relative pose supervision (requires "
+                        "poses.csv per session, see docs/MATCHFORMER_FT.md).")
     p.add_argument("--train-sessions", type=str, default="",
                    help="Comma-separated session names under DATASET.CABLE_ROOT.")
     p.add_argument("--val-sessions", type=str, default="")
     p.add_argument("--cable-root", type=str, default="",
                    help="Override DATASET.CABLE_ROOT.")
+    p.add_argument("--pairs-per-frame", type=int, default=4,
+                   help="Homography mode: how many random-H pairs to draw from each frame.")
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--max-epochs", type=int, default=20)
@@ -93,13 +100,6 @@ def main():
     if args.val_sessions:
         cfg.DATASET.CABLE_SESSIONS_VAL = [s for s in args.val_sessions.split(",") if s]
 
-    cfg.TRAINER.SCHEDULER.TOTAL_STEPS = (
-        max(1, args.max_epochs)
-        * max(1, cfg.DATASET.CABLE_PAIRS_PER_SESSION
-                * max(1, len(cfg.DATASET.CABLE_SESSIONS_TRAIN)))
-        // max(1, args.batch_size * max(1, args.gpus))
-    )
-
     pl.seed_everything(cfg.TRAINER.SEED)
 
     if not cfg.DATASET.CABLE_SESSIONS_TRAIN:
@@ -107,30 +107,54 @@ def main():
             "No training sessions configured. "
             "Pass --train-sessions A,B or set DATASET.CABLE_SESSIONS_TRAIN.")
 
-    train_ds = CableSequenceDataset(
-        cable_root=cfg.DATASET.CABLE_ROOT,
-        sessions=cfg.DATASET.CABLE_SESSIONS_TRAIN,
-        mode="train",
-        img_resize=cfg.DATASET.CABLE_IMG_RESIZE,
-        pair_stride=(cfg.DATASET.CABLE_PAIR_STRIDE_MIN,
-                     cfg.DATASET.CABLE_PAIR_STRIDE_MAX),
-        pairs_per_session=cfg.DATASET.CABLE_PAIRS_PER_SESSION,
-        use_mask=cfg.DATASET.CABLE_USE_MASK,
-        require_pose=cfg.DATASET.CABLE_REQUIRE_POSE,
-        seed=cfg.TRAINER.SEED,
+    if args.data_mode == "homography":
+        train_ds = HomographyDataset(
+            cable_root=cfg.DATASET.CABLE_ROOT,
+            sessions=cfg.DATASET.CABLE_SESSIONS_TRAIN,
+            mode="train",
+            img_resize=cfg.DATASET.CABLE_IMG_RESIZE,
+            pairs_per_frame=args.pairs_per_frame,
+            seed=cfg.TRAINER.SEED,
+        )
+        val_ds = (HomographyDataset(
+            cable_root=cfg.DATASET.CABLE_ROOT,
+            sessions=cfg.DATASET.CABLE_SESSIONS_VAL,
+            mode="val",
+            img_resize=cfg.DATASET.CABLE_IMG_RESIZE,
+            pairs_per_frame=max(1, args.pairs_per_frame // 2),
+            photometric_aug=False,
+            seed=cfg.TRAINER.SEED + 1,
+        ) if cfg.DATASET.CABLE_SESSIONS_VAL else None)
+    else:
+        train_ds = CableSequenceDataset(
+            cable_root=cfg.DATASET.CABLE_ROOT,
+            sessions=cfg.DATASET.CABLE_SESSIONS_TRAIN,
+            mode="train",
+            img_resize=cfg.DATASET.CABLE_IMG_RESIZE,
+            pair_stride=(cfg.DATASET.CABLE_PAIR_STRIDE_MIN,
+                         cfg.DATASET.CABLE_PAIR_STRIDE_MAX),
+            pairs_per_session=cfg.DATASET.CABLE_PAIRS_PER_SESSION,
+            use_mask=cfg.DATASET.CABLE_USE_MASK,
+            require_pose=cfg.DATASET.CABLE_REQUIRE_POSE,
+            seed=cfg.TRAINER.SEED,
+        )
+        val_ds = (CableSequenceDataset(
+            cable_root=cfg.DATASET.CABLE_ROOT,
+            sessions=cfg.DATASET.CABLE_SESSIONS_VAL,
+            mode="val",
+            img_resize=cfg.DATASET.CABLE_IMG_RESIZE,
+            pair_stride=(cfg.DATASET.CABLE_PAIR_STRIDE_MIN,
+                         cfg.DATASET.CABLE_PAIR_STRIDE_MAX),
+            pairs_per_session=max(20, cfg.DATASET.CABLE_PAIRS_PER_SESSION // 5),
+            use_mask=cfg.DATASET.CABLE_USE_MASK,
+            require_pose=cfg.DATASET.CABLE_REQUIRE_POSE,
+            seed=cfg.TRAINER.SEED + 1,
+        ) if cfg.DATASET.CABLE_SESSIONS_VAL else None)
+
+    cfg.TRAINER.SCHEDULER.TOTAL_STEPS = (
+        max(1, args.max_epochs) * max(1, len(train_ds))
+        // max(1, args.batch_size * max(1, args.gpus))
     )
-    val_ds = (CableSequenceDataset(
-        cable_root=cfg.DATASET.CABLE_ROOT,
-        sessions=cfg.DATASET.CABLE_SESSIONS_VAL,
-        mode="val",
-        img_resize=cfg.DATASET.CABLE_IMG_RESIZE,
-        pair_stride=(cfg.DATASET.CABLE_PAIR_STRIDE_MIN,
-                     cfg.DATASET.CABLE_PAIR_STRIDE_MAX),
-        pairs_per_session=max(20, cfg.DATASET.CABLE_PAIRS_PER_SESSION // 5),
-        use_mask=cfg.DATASET.CABLE_USE_MASK,
-        require_pose=cfg.DATASET.CABLE_REQUIRE_POSE,
-        seed=cfg.TRAINER.SEED + 1,
-    ) if cfg.DATASET.CABLE_SESSIONS_VAL else None)
 
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
