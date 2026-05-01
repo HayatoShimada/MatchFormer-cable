@@ -1,0 +1,32 @@
+MatchFormer-cable
+Copyright 2026 Hayato Shimada
+
+This product is a derivative work of MatchFormer
+(https://github.com/InSAI-Lab/MatchFormer), forked at upstream commit
+1b2da5c8ecb0c1fc918f8d5d64fcce1beeab2ba2.
+
+Original MatchFormer:
+    Copyright (c) 2022 InSAI-Lab and the MatchFormer authors
+    Licensed under the Apache License, Version 2.0
+    https://github.com/InSAI-Lab/MatchFormer/blob/master/LICENSE
+
+This product also incorporates code patterns derived from LoFTR
+(https://github.com/zju3dv/LoFTR), specifically the LoFTR-style
+coarse/fine ground-truth supervision and focal/L2 loss formulations
+used in `model/supervision.py` and `model/losses/matchformer_loss.py`.
+
+Original LoFTR:
+    Copyright (c) 2021 zju3dv and the LoFTR authors
+    Licensed under the Apache License, Version 2.0
+    https://github.com/zju3dv/LoFTR/blob/master/LICENSE
+
+This software is distributed under the Apache License, Version 2.0; see
+the LICENSE file in this directory for the full text.
+
+All modifications relative to upstream MatchFormer are
+Copyright 2026 Hayato Shimada
+and are licensed under the Apache License, Version 2.0.
+
+Modifications are summarised in FORK.md. Each individually-modified
+source file carries a header noting the modification, the original
+upstream path, and the license.
